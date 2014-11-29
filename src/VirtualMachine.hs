@@ -6,8 +6,10 @@
 
 module VirtualMachine where
 
+
 import Data.Bits
 import Data.Word
+import Data.Word8.Arithmetic
 import Data.Vector          as Vec
 import Control.Applicative
 import Control.Monad.State  as CMS
@@ -91,12 +93,20 @@ setRgst :: MonadState VM m => RgstNum -> Word8 -> m ()
 setRgst vx nn = CMS.modify $ \ r -> r { rgsts = rgsts r // mods }
   where mods = [(fromIntegral vx, nn)]
 
+opRgstsWithFlag :: (Functor m, Applicative m, MonadState VM m) =>
+                   (Word8 -> Word8 -> (Word8, Bool)) ->
+                   RgstNum -> RgstNum -> RgstNum -> m ()
+opRgstsWithFlag op vz vx vy =
+  op <$> getRgst vx <*> getRgst vy >>= \ (nn, f) ->
+  setRgst 0xF (if f then 1 else 0) >>
+  setRgst vz nn
+
 getRgst :: MonadState VM m => RgstNum -> m Word8
 getRgst vx = CMS.gets $ (! fromIntegral vx) . rgsts
 
 skipNextIf :: MonadState VM m => Bool -> m (Maybe Action)
 skipNextIf b = return $ if b then Just SkipNext
-                          else Nothing
+                             else Nothing
 
 opCodeSem :: (Functor m, Applicative m, MonadState VM m, MonadRandom m) =>
              OpCode a -> m (ResultingAction a)
@@ -111,6 +121,9 @@ opCodeSem (Op8XY0 vx vy) = setRgst vx =<< getRgst vy
 opCodeSem (Op8XY1 vx vy) = setRgst vx =<< (.|.)   <$> getRgst vx <*> getRgst vy
 opCodeSem (Op8XY2 vx vy) = setRgst vx =<< (.&.)   <$> getRgst vx <*> getRgst vy
 opCodeSem (Op8XY3 vx vy) = setRgst vx =<<  xor    <$> getRgst vx <*> getRgst vy
+opCodeSem (Op8XY4 vx vy) = opRgstsWithFlag addWithCarry  vx vx vy
+opCodeSem (Op8XY5 vx vy) = opRgstsWithFlag subWithBorrow vx vx vy
+opCodeSem (Op8XY7 vx vy) = opRgstsWithFlag subWithBorrow vx vy vx
 opCodeSem (Op9XY0 vx vy) = skipNextIf =<< (/=)    <$> getRgst vx <*> getRgst vy
 opCodeSem (OpANNN add)   = setI add
 opCodeSem (OpBNNN add)   = jmpTo . (add +) . fromIntegral =<< getRgst 0
@@ -118,3 +131,4 @@ opCodeSem (OpCXNN vx nn) = setRgst vx =<< (nn +) <$> getRandom
 opCodeSem (OpFX07 vx)    = setRgst vx =<< CMS.gets delay
 opCodeSem (OpFX15 vx)    = setDelay =<< getRgst vx
 opCodeSem (OpFX18 vx)    = setSound =<< getRgst vx
+
