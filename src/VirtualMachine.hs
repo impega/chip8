@@ -9,12 +9,14 @@ module VirtualMachine where
 
 import Data.Bits
 import Data.Word
-import Data.Word8.Arithmetic
-import Data.Vector          as Vec
+import Data.Words
+import Data.Word8.Arithmetic  as DW8
+import Data.Word16.Arithmetic as DWF
+import Data.Vector            as Vec
 import Control.Applicative
-import Control.Monad.Except as CME
-import Control.Monad.State  as CMS
-import Control.Monad.Random as CMR
+import Control.Monad.Except   as CME
+import Control.Monad.State    as CMS
+import Control.Monad.Random   as CMR
 
 type Address = Word16
 type CnstVal = Word8
@@ -63,7 +65,7 @@ data OpCode a where
   OpFX0A :: RgstNum            -> OpCode Some -- Locks; VX := next pressed key
   OpFX15 :: RgstNum            -> OpCode None -- ✓ delay  := VX
   OpFX18 :: RgstNum            -> OpCode None -- ✓ sound  := VX
-  OpFX1E :: RgstNum            -> OpCode None -- I     +:= VX; VF := carry
+  OpFX1E :: RgstNum            -> OpCode None -- ✓ I     +:= VX; VF := carry
 --  | OpFX29  Adress          -- Sets I to the location of the sprite for the character in VX. Characters 0-F (in hexadecimal) are represented by a 4x5 font.
 --  | OpFX33  Stores the Binary-coded decimal representation of VX, with the most significant of three digits at the address in I, the middle digit at I plus 1, and the least significant digit at I plus 2.   | Op
 --  | OpFX55  Stores V0 to VX in memory starting at address I.[4]
@@ -97,6 +99,13 @@ setSound val = CMS.modify $ \ r -> r { sound = val }
 setRgst :: MonadState VM m => RgstNum -> Word8 -> m ()
 setRgst vx nn = CMS.modify $ \ r -> r { rgsts = rgsts r // mods }
   where mods = [(fromIntegral vx, nn)]
+
+incrIByRgstWithFlag :: (Functor m, Applicative m, MonadState VM m) =>
+                       RgstNum -> m ()
+incrIByRgstWithFlag vx =
+  DWF.addWithCarry <$> CMS.gets i <*> (embed <$> getRgst vx) >>= \ (val, f) ->
+  setRgst 0xF (if f then 1 else 0) >>
+  setI val
 
 opRgstsWithFlag :: (Functor m, Applicative m, MonadState VM m) =>
                    (Word8 -> Word8 -> (Word8, Bool)) ->
@@ -145,9 +154,9 @@ opCodeSem (Op8XY0 vx vy) = setRgst vx =<< getRgst vy
 opCodeSem (Op8XY1 vx vy) = setRgst vx =<< (.|.)   <$> getRgst vx <*> getRgst vy
 opCodeSem (Op8XY2 vx vy) = setRgst vx =<< (.&.)   <$> getRgst vx <*> getRgst vy
 opCodeSem (Op8XY3 vx vy) = setRgst vx =<<  xor    <$> getRgst vx <*> getRgst vy
-opCodeSem (Op8XY4 vx vy) = opRgstsWithFlag addWithCarry  vx vx vy
-opCodeSem (Op8XY5 vx vy) = opRgstsWithFlag subWithBorrow vx vx vy
-opCodeSem (Op8XY7 vx vy) = opRgstsWithFlag (fmap (fmap not) . subWithBorrow) vx vy vx
+opCodeSem (Op8XY4 vx vy) = opRgstsWithFlag DW8.addWithCarry  vx vx vy
+opCodeSem (Op8XY5 vx vy) = opRgstsWithFlag DW8.subWithBorrow vx vx vy
+opCodeSem (Op8XY7 vx vy) = opRgstsWithFlag (fmap (fmap not) . DW8.subWithBorrow) vx vy vx
 opCodeSem (Op9XY0 vx vy) = skipNextIf =<< (/=)    <$> getRgst vx <*> getRgst vy
 opCodeSem (OpANNN add)   = setI add
 opCodeSem (OpBNNN add)   = jmpTo . (add +) . fromIntegral =<< getRgst 0
@@ -155,4 +164,4 @@ opCodeSem (OpCXNN vx nn) = setRgst vx =<< (nn +) <$> getRandom
 opCodeSem (OpFX07 vx)    = setRgst vx =<< CMS.gets delay
 opCodeSem (OpFX15 vx)    = setDelay =<< getRgst vx
 opCodeSem (OpFX18 vx)    = setSound =<< getRgst vx
-
+opCodeSem (OpFX1E vx)    = incrIByRgstWithFlag vx
