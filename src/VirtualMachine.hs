@@ -12,6 +12,7 @@ import Data.Word
 import Data.Word8.Arithmetic
 import Data.Vector          as Vec
 import Control.Applicative
+import Control.Monad.Except as CME
 import Control.Monad.State  as CMS
 import Control.Monad.Random as CMR
 
@@ -20,9 +21,9 @@ type CnstVal = Word8
 type RgstNum = Word8 --only using low 4 bits
 
 data VM =
-  VM { memory :: Vector Word8 -- 4096
-     , rgsts  :: Vector Word8 -- 16
-     , stack  :: Vector Word8 -- 16
+  VM { memory :: Vector Word8   -- 4096
+     , rgsts  :: Vector Word8   -- 16
+     , stack  :: Vector Address -- 16
      , i      :: Address
      , pc     :: Address
      , sp     :: Word8
@@ -73,6 +74,10 @@ data Action =
   | SkipNext
   | WaitForKey
 
+data RTError =
+    StackUnderflow
+  | StackOverflow
+
 type family ResultingAction a where
   ResultingAction Some = Maybe Action
   ResultingAction None = ()
@@ -108,10 +113,29 @@ skipNextIf :: MonadState VM m => Bool -> m (Maybe Action)
 skipNextIf b = return $ if b then Just SkipNext
                              else Nothing
 
-opCodeSem :: (Functor m, Applicative m, MonadState VM m, MonadRandom m) =>
-             OpCode a -> m (ResultingAction a)
+callSub :: (MonadState VM m, MonadError RTError m) => Address -> Word8 -> m ()
+callSub add csp | csp >= 15 = throwError StackOverflow
+                | otherwise = do
+  cpc <- CMS.gets pc
+  ()  <- CMS.modify $ \ r -> r { stack = stack r // [(fromIntegral csp+1, cpc+1)]
+                               , sp    = csp + 1 }
+  jmpTo add
+
+retSub :: (Functor m, MonadState VM m, MonadError RTError m) => Word8 -> m ()
+retSub csp | csp <= 0  = throwError StackUnderflow
+           | otherwise = do
+  let nsp = csp - 1
+  npc <- (! fromIntegral nsp) <$> CMS.gets stack
+  ()  <- CMS.modify $ \ r -> r { sp = nsp }
+  jmpTo npc
+
+opCodeSem ::
+  (Functor m, Applicative m, MonadState VM m, MonadRandom m, MonadError RTError m) =>
+  OpCode a -> m (ResultingAction a)
 opCodeSem Op00E0         = return $ Just ClearScreen
+opCodeSem Op00EE         = retSub =<< CMS.gets sp
 opCodeSem (Op1NNN add)   = jmpTo add
+opCodeSem (Op2NNN add)   = callSub add =<< CMS.gets sp
 opCodeSem (Op3XNN vx nn) = skipNextIf =<< (nn ==) <$> getRgst vx
 opCodeSem (Op4XNN vx nn) = skipNextIf =<< (nn /=) <$> getRgst vx
 opCodeSem (Op5XY0 vx vy) = skipNextIf =<< (==)    <$> getRgst vx <*> getRgst vy
