@@ -68,8 +68,8 @@ data OpCode a where
   OpFX1E :: RgstNum            -> OpCode None -- ✓ I     +:= VX; VF := carry
 --  | OpFX29  Adress          -- Sets I to the location of the sprite for the character in VX. Characters 0-F (in hexadecimal) are represented by a 4x5 font.
 --  | OpFX33  Stores the Binary-coded decimal representation of VX, with the most significant of three digits at the address in I, the middle digit at I plus 1, and the least significant digit at I plus 2.   | Op
---  | OpFX55  Stores V0 to VX in memory starting at address I.[4]
---  | OpFX65  Fills V0 to VX with values from memory starting at address I.[4]
+  OpFX55 :: RgstNum            -> OpCode None -- ✓ mem[I..I+X] <- (V0,..,VX)
+  OpFX65 :: RgstNum            -> OpCode None -- ✓ (V0,..,VX) <- mem[I..I+X]
 
 data Action =
     ClearScreen
@@ -138,6 +138,21 @@ retSub csp | csp <= 0  = throwError StackUnderflow
   ()  <- CMS.modify $ \ r -> r { sp = nsp }
   jmpTo npc
 
+readFromMem :: (Functor m, MonadState VM m) => RgstNum -> m ()
+readFromMem vx = do
+  begin <- fromIntegral <$> CMS.gets i
+  mem   <- CMS.gets memory
+  let updates = [ (x, mem ! (begin + x)) | x <- [0..(fromIntegral vx)] ]
+  CMS.modify $ \ r -> r { rgsts = rgsts r // updates }
+
+writeToMem :: (Functor m, MonadState VM m) => RgstNum -> m ()
+writeToMem vx = do
+  begin <- fromIntegral <$> CMS.gets i
+  regs  <- CMS.gets rgsts
+  let updates = [ (begin + x, regs ! x) | x <- [0..(fromIntegral vx)] ]
+  CMS.modify $ \ r -> r { memory = memory r // updates }
+
+
 opCodeSem ::
   (Functor m, Applicative m, MonadState VM m, MonadRandom m, MonadError RTError m) =>
   OpCode a -> m (ResultingAction a)
@@ -165,3 +180,5 @@ opCodeSem (OpFX07 vx)    = setRgst vx =<< CMS.gets delay
 opCodeSem (OpFX15 vx)    = setDelay =<< getRgst vx
 opCodeSem (OpFX18 vx)    = setSound =<< getRgst vx
 opCodeSem (OpFX1E vx)    = incrIByRgstWithFlag vx
+opCodeSem (OpFX55 vx)    = writeToMem vx
+opCodeSem (OpFX65 vx)    = readFromMem vx
