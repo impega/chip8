@@ -147,7 +147,7 @@ opCodeSem (Op8XY2 vx vy) = setRgst vx =<< (.&.)   <$> getRgst vx <*> getRgst vy
 opCodeSem (Op8XY3 vx vy) = setRgst vx =<<  xor    <$> getRgst vx <*> getRgst vy
 opCodeSem (Op8XY4 vx vy) = opRgstsWithFlag addWithCarry  vx vx vy
 opCodeSem (Op8XY5 vx vy) = opRgstsWithFlag subWithBorrow vx vx vy
-opCodeSem (Op8XY7 vx vy) = opRgstsWithFlag subWithBorrow vx vy vx
+opCodeSem (Op8XY7 vx vy) = opRgstsWithFlag (fmap (fmap not) . subWithBorrow) vx vy vx
 opCodeSem (Op9XY0 vx vy) = skipNextIf =<< (/=)    <$> getRgst vx <*> getRgst vy
 opCodeSem (OpANNN add)   = setI add
 opCodeSem (OpBNNN add)   = jmpTo . (add +) . fromIntegral =<< getRgst 0
