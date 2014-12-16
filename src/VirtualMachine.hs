@@ -26,6 +26,7 @@ data VM =
   VM { memory :: Vector Word8   -- 4096
      , rgsts  :: Vector Word8   -- 16
      , stack  :: Vector Address -- 16
+     , keys   :: Vector Bool    -- 16
      , i      :: Address
      , pc     :: Address
      , sp     :: Word8
@@ -51,16 +52,16 @@ data OpCode a where
   Op8XY3 :: RgstNum -> RgstNum -> OpCode None -- ✓ VX xor:= VY
   Op8XY4 :: RgstNum -> RgstNum -> OpCode None -- ✓ VX   +:= VY; VF := carry
   Op8XY5 :: RgstNum -> RgstNum -> OpCode None -- ✓ VX   -:= VY; VF := borrow
-  Op8XY6 :: RgstNum            -> OpCode None -- SHR VX; VF := least significant bit
+  Op8XY6 :: RgstNum            -> OpCode None -- ✓ SHR VX; VF := least significant bit
   Op8XY7 :: RgstNum -> RgstNum -> OpCode None -- ✓ VX    := VY - VX; VF := not borrow
-  Op8XYE :: RgstNum            -> OpCode None -- SHL VX; VF := most significant bit
+  Op8XYE :: RgstNum            -> OpCode None -- ✓ SHL VX; VF := most significant bit
   Op9XY0 :: RgstNum -> RgstNum -> OpCode Some -- ✓ Skips <== VX <> VY
   OpANNN :: Address            -> OpCode None -- ✓ I := NNN
   OpBNNN :: Address            -> OpCode None -- ✓ Jmp NNN + V0
   OpCXNN :: RgstNum -> CnstVal -> OpCode None -- ✓ VX := ?! and NN
 --  OpDXYN  Address Address -- Sprites stored in memory at location in index register (I), maximum 8bits wide. Wraps around the screen. If when drawn, clears a pixel, register VF is set to 1 otherwise it is zero. All drawing is XOR drawing (i.e. it toggles the screen pixels)
-  OpEX9E :: RgstNum            -> OpCode Some -- Skips <== VX key     pressed
-  OpEXA1 :: RgstNum            -> OpCode Some -- Skips <== VX key not pressed
+  OpEX9E :: RgstNum            -> OpCode Some -- ✓ Skips <== VX key     pressed
+  OpEXA1 :: RgstNum            -> OpCode Some -- ✓ Skips <== VX key not pressed
   OpFX07 :: RgstNum            -> OpCode None -- ✓ VX := delay
   OpFX0A :: RgstNum            -> OpCode Some -- Locks; VX := next pressed key
   OpFX15 :: RgstNum            -> OpCode None -- ✓ delay  := VX
@@ -152,7 +153,6 @@ writeToMem vx = do
   let updates = [ (begin + x, regs ! x) | x <- [0..(fromIntegral vx)] ]
   CMS.modify $ \ r -> r { memory = memory r // updates }
 
-
 opCodeSem ::
   (Functor m, Applicative m, MonadState VM m, MonadRandom m, MonadError RTError m) =>
   OpCode a -> m (ResultingAction a)
@@ -169,13 +169,17 @@ opCodeSem (Op8XY0 vx vy) = setRgst vx =<< getRgst vy
 opCodeSem (Op8XY1 vx vy) = setRgst vx =<< (.|.)   <$> getRgst vx <*> getRgst vy
 opCodeSem (Op8XY2 vx vy) = setRgst vx =<< (.&.)   <$> getRgst vx <*> getRgst vy
 opCodeSem (Op8XY3 vx vy) = setRgst vx =<<  xor    <$> getRgst vx <*> getRgst vy
-opCodeSem (Op8XY4 vx vy) = opRgstsWithFlag DW8.addWithCarry  vx vx vy
-opCodeSem (Op8XY5 vx vy) = opRgstsWithFlag DW8.subWithBorrow vx vx vy
+opCodeSem (Op8XY4 vx vy) = opRgstsWithFlag DW8.addWithCarry       vx vx vy
+opCodeSem (Op8XY5 vx vy) = opRgstsWithFlag DW8.subWithBorrow      vx vx vy
+opCodeSem (Op8XY6 vx)    = opRgstsWithFlag (const DW8.shiftRight) vx vx vx
 opCodeSem (Op8XY7 vx vy) = opRgstsWithFlag (fmap (fmap not) . DW8.subWithBorrow) vx vy vx
+opCodeSem (Op8XYE vx)    = opRgstsWithFlag (const DW8.shiftLeft)  vx vx vx
 opCodeSem (Op9XY0 vx vy) = skipNextIf =<< (/=)    <$> getRgst vx <*> getRgst vy
 opCodeSem (OpANNN add)   = setI add
 opCodeSem (OpBNNN add)   = jmpTo . (add +) . fromIntegral =<< getRgst 0
 opCodeSem (OpCXNN vx nn) = setRgst vx =<< (nn +) <$> getRandom
+opCodeSem (OpEX9E vx)    = skipNextIf       =<< (flip (!) . fromIntegral) <$> getRgst vx <*> CMS.gets keys
+opCodeSem (OpEXA1 vx)    = skipNextIf . not =<< (flip (!) . fromIntegral) <$> getRgst vx <*> CMS.gets keys
 opCodeSem (OpFX07 vx)    = setRgst vx =<< CMS.gets delay
 opCodeSem (OpFX15 vx)    = setDelay =<< getRgst vx
 opCodeSem (OpFX18 vx)    = setSound =<< getRgst vx
